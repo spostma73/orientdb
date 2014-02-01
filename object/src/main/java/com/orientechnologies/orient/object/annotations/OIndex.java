@@ -15,5 +15,5 @@ public @interface OIndex
 {
     String name() default "";
     OClass.INDEX_TYPE indexType();
-    OType keyType() default OType.INHERITED;
+//    OType keyType() default OType.INHERITED;   Can't implement keyType yet
 }
