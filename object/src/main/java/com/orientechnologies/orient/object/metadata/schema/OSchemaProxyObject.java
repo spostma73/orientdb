@@ -1,6 +1,7 @@
 /*
  *
  * Copyright 2013 Luca Molino (molino.luca--AT--gmail.com)
+ * Sander Postma - 2014  Added @OIndex, @OAttributes & @Column annotation support
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +18,13 @@
 package com.orientechnologies.orient.object.metadata.schema;
 
 import java.lang.reflect.Field;
-import java.util.Collection;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
+import com.orientechnologies.orient.core.collate.OCaseInsensitiveCollate;
+import com.orientechnologies.orient.core.collate.ODefaultCollate;
+import com.orientechnologies.orient.core.metadata.schema.OProperty;
+import com.orientechnologies.orient.object.annotations.OAttributes;
+import com.orientechnologies.orient.object.annotations.OIndex;
 import javassist.util.proxy.Proxy;
 
 import com.orientechnologies.common.exception.OException;
@@ -39,9 +43,11 @@ import com.orientechnologies.orient.core.type.ODocumentWrapper;
 import com.orientechnologies.orient.object.db.OObjectDatabaseTx;
 import com.orientechnologies.orient.object.enhancement.OObjectEntitySerializer;
 
+import javax.persistence.Column;
+
 /**
  * @author luca.molino
- * 
+ *
  */
 public class OSchemaProxyObject implements OSchema {
 
@@ -183,7 +189,7 @@ public class OSchemaProxyObject implements OSchema {
 
   /**
    * Scans all classes accessible from the context class loader which belong to the given package and subpackages.
-   * 
+   *
    * @param iPackageName
    *          The base package
    */
@@ -193,7 +199,7 @@ public class OSchemaProxyObject implements OSchema {
 
   /**
    * Scans all classes accessible from the context class loader which belong to the given package and subpackages.
-   * 
+   *
    * @param iPackageName
    *          The base package
    */
@@ -213,7 +219,7 @@ public class OSchemaProxyObject implements OSchema {
 
   /**
    * Generate/updates the SchemaClass and properties from given Class<?>.
-   * 
+   *
    * @param iClass
    *          :- the Class<?> to generate
    */
@@ -223,7 +229,7 @@ public class OSchemaProxyObject implements OSchema {
 
   /**
    * Generate/updates the SchemaClass and properties from given Class<?>.
-   * 
+   *
    * @param iClass
    *          :- the Class<?> to generate
    */
@@ -235,6 +241,10 @@ public class OSchemaProxyObject implements OSchema {
     if (schema == null) {
       generateOClass(iClass, database);
     }
+
+    OIndex annIndex;
+    Map<String, OIndex> indexMappings = new HashMap<String, OIndex>();
+    Map<String, List<String>> indexPropNames = new HashMap<String, List<String>>();
     List<String> fields = OObjectEntitySerializer.getClassFields(iClass);
     if (fields != null)
       for (String field : fields) {
@@ -297,13 +307,72 @@ public class OSchemaProxyObject implements OSchema {
           break;
 
         default:
-          schema.createProperty(field, t);
+          OProperty prop = schema.createProperty(field, t);
+          OAttributes attributes;
+          if((attributes = f.getAnnotation(OAttributes.class)) != null)
+              updateAttributes(prop, attributes);
+          else
+          {
+              Column jpaColumn;
+              if((jpaColumn = f.getAnnotation(Column.class)) != null)
+                updateAttributes(prop, jpaColumn);
+          }
           break;
         }
+
+        // Prepare index by ready @OIndex annotation
+        if((annIndex = f.getAnnotation(OIndex.class)) != null)
+        {
+            String indexName = annIndex.name();
+            if(indexName.length() == 0)
+                indexName = iClass.getName() + '.' + f.getName();
+            if(indexMappings.get(indexName) == null) // When multiple @OIndex annotations defined with the same name, types will be taken from the first one
+                indexMappings.put(indexName, annIndex);
+            List<String> propNames = indexPropNames.get(indexName);
+            if(propNames == null)
+            {
+                propNames = new ArrayList<String>();
+                indexPropNames.put(indexName, propNames);
+            }
+            if(!propNames.contains(f.getName()))
+                propNames.add(f.getName());
+        }
+      }
+
+      // Create indices
+      for(String indexName : indexMappings.keySet())
+      {
+          OIndex index = indexMappings.get(indexName);
+          List<String> propNames = indexPropNames.get(indexName);
+          schema.createIndex(indexName, index.indexType(), propNames.toArray(new String[propNames.size()]));
+          // TODO Where is key-type??
       }
   }
 
-  /**
+    private void updateAttributes(OProperty prop, OAttributes attributes)
+    {
+        if(attributes.min().length() > 0)
+            prop.set(OProperty.ATTRIBUTES.MIN, attributes.min());
+        if(attributes.max().length() > 0)
+            prop.set(OProperty.ATTRIBUTES.MAX, attributes.max());
+        if(attributes.regExp().length() > 0)
+            prop.set(OProperty.ATTRIBUTES.REGEXP, attributes.regExp());
+        prop.setCollate(attributes.collateCaseInsensitive() ? "ci" : "default");
+        prop.set(OProperty.ATTRIBUTES.MANDATORY, attributes.mandatory());
+        prop.set(OProperty.ATTRIBUTES.NOTNULL, attributes.notNull());
+        prop.set(OProperty.ATTRIBUTES.READONLY, attributes.readOnly());
+    }
+
+    private void updateAttributes(OProperty prop, Column jpaColumn)
+    {
+        if(jpaColumn.length() > 0 && prop.getType() != OType.DATE && prop.getType() != OType.DATETIME)
+            prop.set(OProperty.ATTRIBUTES.MAX, jpaColumn.length());
+        prop.set(OProperty.ATTRIBUTES.NOTNULL, !jpaColumn.nullable());
+        prop.set(OProperty.ATTRIBUTES.READONLY, !jpaColumn.updatable());
+    }
+
+
+    /**
    * Checks if all registered entities has schema generated, if not it generates it
    */
   public synchronized void synchronizeSchema() {
