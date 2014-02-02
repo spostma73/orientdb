@@ -365,7 +365,7 @@ public class OSchemaProxyObject implements OSchema {
 
     private void updateAttributes(OProperty prop, Column jpaColumn)
     {
-        if(jpaColumn.length() > 0 && prop.getType() != OType.DATE && prop.getType() != OType.DATETIME)
+        if(jpaColumn.length() > 0 && prop.getType() == OType.STRING) // Only string, in Orient MAX has another meaning for other types.
             prop.set(OProperty.ATTRIBUTES.MAX, jpaColumn.length());
         prop.set(OProperty.ATTRIBUTES.NOTNULL, !jpaColumn.nullable());
         prop.set(OProperty.ATTRIBUTES.READONLY, !jpaColumn.updatable());
