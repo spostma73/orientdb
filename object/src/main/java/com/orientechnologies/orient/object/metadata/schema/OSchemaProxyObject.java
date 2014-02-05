@@ -1,7 +1,7 @@
 /*
  *
  * Copyright 2013 Luca Molino (molino.luca--AT--gmail.com)
- * Sander Postma - 2014  Added @OIndex, @OAttributes & @Column annotation support
+ * Sander Postma - 2014  Added OIndex annotation support
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
  */
 package com.orientechnologies.orient.object.metadata.schema;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.util.*;
 
@@ -25,6 +26,7 @@ import com.orientechnologies.orient.core.collate.ODefaultCollate;
 import com.orientechnologies.orient.core.metadata.schema.OProperty;
 import com.orientechnologies.orient.object.annotations.OAttributes;
 import com.orientechnologies.orient.object.annotations.OIndex;
+import com.orientechnologies.orient.object.serialization.OObjectSerializerHelper;
 import javassist.util.proxy.Proxy;
 
 import com.orientechnologies.common.exception.OException;
@@ -213,7 +215,7 @@ public class OSchemaProxyObject implements OSchema {
       throw new OException(e);
     }
     for (Class<?> c : classes) {
-      generateSchema(c);
+      generateSchema(c, true);
     }
   }
 
@@ -223,8 +225,8 @@ public class OSchemaProxyObject implements OSchema {
    * @param iClass
    *          :- the Class<?> to generate
    */
-  public synchronized void generateSchema(final Class<?> iClass) {
-    generateSchema(iClass, ODatabaseRecordThreadLocal.INSTANCE.get());
+  public synchronized void generateSchema(final Class<?> iClass, boolean fullSchemaGeneration) {
+    generateSchema(iClass, ODatabaseRecordThreadLocal.INSTANCE.get(), fullSchemaGeneration);
   }
 
   /**
@@ -233,7 +235,7 @@ public class OSchemaProxyObject implements OSchema {
    * @param iClass
    *          :- the Class<?> to generate
    */
-  public synchronized void generateSchema(final Class<?> iClass, ODatabaseRecord database) {
+  public synchronized void generateSchema(final Class<?> iClass, ODatabaseRecord database, boolean fullSchemaGeneration) {
     if (iClass == null || iClass.isInterface() || iClass.isPrimitive() || iClass.isEnum() || iClass.isAnonymousClass())
       return;
     OObjectEntitySerializer.registerClass(iClass);
@@ -256,6 +258,16 @@ public class OSchemaProxyObject implements OSchema {
         if (f.getType().equals(Object.class) || f.getType().equals(ODocument.class) || f.getType().equals(ORecordBytes.class)) {
           continue;
         }
+
+        // Check for schema annotations, allowing for hybrid schema model
+        OAttributes annAttributes = f.getAnnotation(OAttributes.class);
+        Annotation annJpaColumn = null;
+        if (OObjectSerializerHelper.jpaColumnClass != null)
+            annJpaColumn = f.getAnnotation(OObjectSerializerHelper.jpaColumnClass);
+        annIndex = f.getAnnotation(OIndex.class);
+        if(!fullSchemaGeneration && annAttributes == null && annJpaColumn == null && annIndex == null)
+          continue;
+
         OType t = OObjectEntitySerializer.getTypeByClass(iClass, field, f);
         if (t == null) {
           if (f.getType().isEnum())
@@ -264,18 +276,21 @@ public class OSchemaProxyObject implements OSchema {
             t = OType.LINK;
           }
         }
+
+        OProperty prop = null;
         switch (t) {
 
         case LINK:
           Class<?> linkedClazz = f.getType();
-          generateLinkProperty(database, schema, field, t, linkedClazz);
+          prop = generateLinkProperty(database, schema, field, t, linkedClazz);
           break;
         case LINKLIST:
         case LINKMAP:
         case LINKSET:
           linkedClazz = OReflectionHelper.getGenericMultivalueType(f);
           if (linkedClazz != null)
-            generateLinkProperty(database, schema, field, t, linkedClazz);
+              prop = generateLinkProperty(database, schema, field, t, linkedClazz);
+            int g=0;
           break;
 
         case EMBEDDED:
@@ -297,31 +312,30 @@ public class OSchemaProxyObject implements OSchema {
             continue;
           } else {
             if (OReflectionHelper.isJavaType(linkedClazz)) {
-              schema.createProperty(field, t, OType.getTypeByClass(linkedClazz));
+                prop = schema.createProperty(field, t, OType.getTypeByClass(linkedClazz));
             } else if (linkedClazz.isEnum()) {
-              schema.createProperty(field, t, OType.STRING);
+                prop = schema.createProperty(field, t, OType.STRING);
             } else {
-              generateLinkProperty(database, schema, field, t, linkedClazz);
+                prop = generateLinkProperty(database, schema, field, t, linkedClazz);
             }
           }
           break;
 
         default:
-          OProperty prop = schema.createProperty(field, t);
-          OAttributes attributes;
-          if((attributes = f.getAnnotation(OAttributes.class)) != null)
-              updateAttributes(prop, attributes);
-          else
-          {
-              Column jpaColumn;
-              if((jpaColumn = f.getAnnotation(Column.class)) != null)
-                updateAttributes(prop, jpaColumn);
-          }
+          prop = schema.createProperty(field, t);
           break;
         }
 
+        if(prop != null)
+        {
+          if(annAttributes != null)
+              updateAttributes(prop, annAttributes);
+          else if (annJpaColumn != null)
+              updateAttributes(prop, (Column) annJpaColumn);
+        }
+
         // Prepare index by ready @OIndex annotation
-        if((annIndex = f.getAnnotation(OIndex.class)) != null)
+        if(annIndex != null)
         {
             String indexName = annIndex.name();
             if(indexName.length() == 0)
@@ -357,7 +371,7 @@ public class OSchemaProxyObject implements OSchema {
             prop.set(OProperty.ATTRIBUTES.MAX, attributes.max());
         if(attributes.regExp().length() > 0)
             prop.set(OProperty.ATTRIBUTES.REGEXP, attributes.regExp());
-        prop.setCollate(attributes.collateCaseInsensitive() ? "ci" : "default");
+        prop.set(OProperty.ATTRIBUTES.COLLATE, attributes.collateCaseInsensitive() ? "ci" : "default");
         prop.set(OProperty.ATTRIBUTES.MANDATORY, attributes.mandatory());
         prop.set(OProperty.ATTRIBUTES.NOTNULL, attributes.notNull());
         prop.set(OProperty.ATTRIBUTES.READONLY, attributes.readOnly());
@@ -365,7 +379,7 @@ public class OSchemaProxyObject implements OSchema {
 
     private void updateAttributes(OProperty prop, Column jpaColumn)
     {
-        if(jpaColumn.length() > 0 && prop.getType() == OType.STRING) // Only string, in Orient MAX has another meaning for other types.
+        if(jpaColumn.length() > 0 && prop.getType() == OType.STRING) // Only string, in Orient MAX has another meaning
             prop.set(OProperty.ATTRIBUTES.MAX, jpaColumn.length());
         prop.set(OProperty.ATTRIBUTES.NOTNULL, !jpaColumn.nullable());
         prop.set(OProperty.ATTRIBUTES.READONLY, !jpaColumn.updatable());
@@ -393,7 +407,7 @@ public class OSchemaProxyObject implements OSchema {
       for (Class<?> currentClass = iClass; currentClass != Object.class;) {
 
         if (automaticSchemaGeneration && !currentClass.equals(Object.class) && !currentClass.equals(ODocument.class)) {
-          ((OSchemaProxyObject) database.getMetadata().getSchema()).generateSchema(currentClass, database.getUnderlying());
+          ((OSchemaProxyObject) database.getMetadata().getSchema()).generateSchema(currentClass, database.getUnderlying(), automaticSchemaGeneration);
         }
         String iClassName = currentClass.getSimpleName();
         currentClass = currentClass.getSuperclass();
@@ -464,13 +478,13 @@ public class OSchemaProxyObject implements OSchema {
     }
   }
 
-  protected static void generateLinkProperty(ODatabaseRecord database, OClass schema, String field, OType t, Class<?> linkedClazz) {
+  protected static OProperty generateLinkProperty(ODatabaseRecord database, OClass schema, String field, OType t, Class<?> linkedClazz) {
     OClass linkedClass = database.getMetadata().getSchema().getClass(linkedClazz);
     if (linkedClass == null) {
       OObjectEntitySerializer.registerClass(linkedClazz);
       linkedClass = database.getMetadata().getSchema().getClass(linkedClazz);
     }
-    schema.createProperty(field, t, linkedClass);
+    return schema.createProperty(field, t, linkedClass);
   }
 
 }
