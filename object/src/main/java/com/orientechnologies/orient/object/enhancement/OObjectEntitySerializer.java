@@ -543,15 +543,16 @@ public class OObjectEntitySerializer {
             embeddedFields.put(currentClass, classEmbeddedFields);
           }
 
+
         }
 
         registerCallbacks(currentClass);
 
       }
 
-      if (automaticSchemaGeneration && !currentClass.equals(Object.class) && !currentClass.equals(ODocument.class)) {
+      if (!ODatabaseRecordThreadLocal.INSTANCE.get().isClosed() && !currentClass.equals(Object.class) && !currentClass.equals(ODocument.class)) {
         ((OSchemaProxyObject) ODatabaseRecordThreadLocal.INSTANCE.get().getDatabaseOwner().getMetadata().getSchema())
-            .generateSchema(currentClass, ODatabaseRecordThreadLocal.INSTANCE.get());
+            .generateSchema(currentClass, ODatabaseRecordThreadLocal.INSTANCE.get(), automaticSchemaGeneration);
       }
       String iClassName = currentClass.getSimpleName();
       currentClass = currentClass.getSuperclass();
